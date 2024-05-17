@@ -1,0 +1,2 @@
+# bad_block_management
+bad_block_management
