@@ -12,5 +12,6 @@
 #define INTERLEAVE        (DIE * PLANE)
 #define RESERVED_BLOCK    20
 #define REMAP_TABLE_MAX   256
+#define REMAP_GROUP_MAX   2
 
 #endif //CONFIG_H

@@ -8,7 +8,9 @@
 #include <stdint.h>
 
 #define BAD_BLOCK_BIT (0x8)
-#define PATCH_BLOCK_BIT (0x4)
+#define REMAP_BLOCK_BIT (0x4)
+#define BAD_MAP_INDEX(x) ((x) >> 1)
+#define BAD_MAP_OFFSET(x) (((x) & 1) << 2)
 
 void bad_block_init(void);
 void* bad_block_map_get(void);
