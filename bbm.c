@@ -308,6 +308,11 @@ uint32_t bad_block_run_replace(uint16_t log_block, uint8_t *error_plane) {
         ASSERT(remap_block[i] < geo->block);
         remap_node[i].used = 1;
         remap_node[i].block = remap_block[i];
+        index = remap_block[i] * geo->interleave + i;
+        map_index = BAD_MAP_INDEX(index);
+        map_offset = BAD_MAP_OFFSET(index);
+        ASSERT(!(bad_map[map_index] & ((BAD_BLOCK_BIT | REMAP_BLOCK_BIT) << map_offset)));
+        bad_map[map_index] |= (REMAP_BLOCK_BIT << map_offset);
     }
     g_bbm->remap_phy_block[vir] = BBM_REMAP_MASK | table_index;
     return TRUE;
