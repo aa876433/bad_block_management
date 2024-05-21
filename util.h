@@ -25,6 +25,6 @@
 
 #define PTR_ADD_OFFSET(ptr, offset) ((void*)((char*)(ptr) + (offset)))
 #define GEN_RANDOM() ((rand() & 0xFFFF) | (rand() << 16))
-
+#define IS_ONLY_BIT_SET(num, bit) (num == bit)
 
 #endif //UTIL_H

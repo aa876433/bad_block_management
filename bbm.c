@@ -7,7 +7,6 @@
 #include "bad_map.h"
 #include "nand_geometry.h"
 #include "util.h"
-#include <windows.h>
 
 #define BBM_SIGNATURE 0xBBA5BEEF
 #define BBM_REMAP_MASK (32768)
@@ -49,7 +48,6 @@ void bad_block_mgr_init(void) {
     uint32_t remap_table_size = ROUND_UP(geo->interleave * REMAP_TABLE_MAX * sizeof(REMAP_NODE_T), 4);
     uint32_t remap_grp_size = ROUND_UP(geo->interleave * sizeof(uint16_t) * (REMAP_GROUP_MAX + 1), 4);
     buf_size += (reamp_block_size << 1) + remap_table_size + remap_grp_size;
-    printf("%d, %d, %d\n", reamp_block_size, remap_table_size, remap_grp_size);
     g_bbm = (BB_MGR *) malloc(buf_size);
     memset(g_bbm, 0x00, buf_size);
     g_bbm->signature = BBM_SIGNATURE;
@@ -77,6 +75,7 @@ void bad_block_mgr_build(void) {
     for (uint32_t block = RESERVED_BLOCK; block < geo->block; block++) {
         is_good_block = 1;
         temp = index;
+        ASSERT(index % geo->interleave == 0);
         for (uint32_t j = 0; j < geo->interleave; j++, index++) {
             map_index = BAD_MAP_INDEX(index);
             map_offset = BAD_MAP_OFFSET(index);
@@ -89,11 +88,18 @@ void bad_block_mgr_build(void) {
     COLLECT:
         if (is_good_block) {
             g_bbm->remap_phy_block[g_bbm->remap_phy_index++] = block;
+            index = temp;
+            for (uint32_t j = 0; j < geo->interleave; j++, index++) {
+                map_index = BAD_MAP_INDEX(index);
+                map_offset = BAD_MAP_OFFSET(index);
+                bad_map[map_index] |= PERFECT_BLOCK_BIT << map_offset;
+            }
         } else {
             index = temp;
             remap_group = remap_grp_base;
             for (uint32_t j = 0; j < geo->interleave; j++, index++) {
                 if (remap_group->wPtr >= REMAP_TABLE_MAX) {
+                    remap_group = PTR_ADD_OFFSET(remap_group, grp_size);
                     continue;
                 }
                 map_index = BAD_MAP_INDEX(index);
@@ -115,16 +121,18 @@ void bad_block_mgr_build(void) {
     free(remap_grp_base);
 }
 
-
+extern int min_plane;
 void bad_block_remap_table_build(void *remap_grp_base, uint32_t grp_size) {
     NAND_GEOMETRY_T *geo = nand_geometry_get();
     REMAP_GROUP_T *remap_group = remap_grp_base;
     uint8_t *bad_map = bad_block_map_get();
     uint32_t index, map_index, map_offset;
     uint16_t min_group_count = 0xFFFF;
+
     for (uint32_t i = 0; i < geo->interleave; i++) {
         if (remap_group->wPtr < min_group_count) {
             min_group_count = remap_group->wPtr;
+            min_plane = i;
         }
         remap_group = PTR_ADD_OFFSET(remap_group, grp_size);
     }
@@ -141,7 +149,7 @@ void bad_block_remap_table_build(void *remap_grp_base, uint32_t grp_size) {
             map_index = BAD_MAP_INDEX(index);
             map_offset = BAD_MAP_OFFSET(index);
             ASSERT(block < geo->block);
-            ASSERT(!(bad_map[map_index] & ((BAD_BLOCK_BIT | REMAP_BLOCK_BIT) << map_offset)));
+            ASSERT(!BAD_MAP_GET(bad_map[map_index], map_offset));
             bad_map[map_index] |= (REMAP_BLOCK_BIT << map_offset);
             remap_node[j].used = 1;
             remap_node[j].block = block;
@@ -184,13 +192,19 @@ void bad_block_find_remap(uint16_t log_block, uint16_t log_die, uint16_t *remap_
             index = block * geo->interleave + start + i;
             map_index = BAD_MAP_INDEX(index);
             map_offset = BAD_MAP_OFFSET(index);
-            ASSERT(bad_map[map_index] & (REMAP_BLOCK_BIT << map_offset));
+            ASSERT(IS_ONLY_BIT_SET(BAD_MAP_GET(bad_map[map_index], map_offset), REMAP_BLOCK_BIT));
             remap_block[i] = remap_node[start + i].block;
             ASSERT(remap_block[i] < geo->block);
         }
     } else {
+        index = pb * geo->interleave + log_die * geo->plane;
+        ASSERT(pb < geo->block);
         for (uint32_t i = 0; i < geo->plane; i++) {
             remap_block[i] = pb;
+            map_index = BAD_MAP_INDEX(index);
+            map_offset = BAD_MAP_OFFSET(index);
+            ASSERT(IS_ONLY_BIT_SET(BAD_MAP_GET(bad_map[map_index], map_offset), PERFECT_BLOCK_BIT));
+            index++;
         }
     }
 }
@@ -221,12 +235,13 @@ uint32_t bad_block_run_replace(uint16_t log_block, uint8_t *error_plane) {
         map_offset = BAD_MAP_OFFSET(index);
         ASSERT(!(bad_map[map_index] & (BAD_BLOCK_BIT << map_offset)));
         if (remap_node) {
-            ASSERT((bad_map[map_index] & (REMAP_BLOCK_BIT << map_offset)));
+            ASSERT(IS_ONLY_BIT_SET(BAD_MAP_GET(bad_map[map_index], map_offset), REMAP_BLOCK_BIT));
             ASSERT(remap_node[i].used);
             bad_map[map_index] &= ~(REMAP_BLOCK_BIT << map_offset);
             remap_node[i].used = 0;
         } else {
-            ASSERT(!(bad_map[map_index] & (REMAP_BLOCK_BIT << map_offset)));
+            ASSERT(IS_ONLY_BIT_SET(BAD_MAP_GET(bad_map[map_index], map_offset), PERFECT_BLOCK_BIT));
+            bad_map[map_index] &= ~(PERFECT_BLOCK_BIT << map_offset);
         }
         if (error_plane[i]) {
             bad_map[map_index] |= (BAD_BLOCK_BIT << map_offset);
@@ -247,12 +262,12 @@ uint32_t bad_block_run_replace(uint16_t log_block, uint8_t *error_plane) {
                 remap_block[i] = block;
             } else {
                 block = 0xFFFF;
-                index = i;
-                for (uint32_t j = 0; j < geo->block; j++) {
+                index = RESERVED_BLOCK * geo->interleave + i;
+                for (uint32_t j = RESERVED_BLOCK; j < geo->block; j++) {
                     map_index = BAD_MAP_INDEX(index);
                     map_offset = BAD_MAP_OFFSET(index);
-                    if (!(bad_map[map_index] & ~((BAD_BLOCK_BIT | REMAP_BLOCK_BIT) << map_offset))) {
-                        block = i;
+                    if (BAD_MAP_GET(bad_map[map_index], map_offset) == 0) {
+                        block = j;
                         break;
                     }
                     index += geo->interleave;
@@ -273,16 +288,21 @@ uint32_t bad_block_run_replace(uint16_t log_block, uint8_t *error_plane) {
     if (!can_replace) {
         remap_group = g_bbm->remap_group;
         for (uint32_t i = 0; i < geo->interleave; i++) {
-            ASSERT(remap_group->wPtr < REMAP_GROUP_MAX);
-            remap_group->block[remap_group->wPtr++] = remap_block[i];
-            remap_group = PTR_ADD_OFFSET(remap_group, grp_size);
+            if (remap_block[i] != 0xFFFF && remap_group->wPtr < REMAP_GROUP_MAX) {
+                remap_group->block[remap_group->wPtr++] = remap_block[i];
+                remap_group = PTR_ADD_OFFSET(remap_group, grp_size);
+                index = remap_block[i] * geo->interleave + i;
+                map_index = BAD_MAP_INDEX(index);
+                map_offset = BAD_MAP_OFFSET(index);
+                ASSERT(BAD_MAP_GET(bad_map[map_index], map_offset) == 0);
+            }
         }
         g_bbm->remap_phy_block[vir] = ~BBM_REMAP_MASK & 0xFFFF;
         return FALSE;
     }
 
     if (table_index == 0xFFFF) {
-        uint32_t start = g_bbm->remap_table_index;
+        uint32_t start = g_bbm->remap_table_index % REMAP_TABLE_MAX;
         for (uint32_t i = 0; i < REMAP_TABLE_MAX; i++) {
             remap_node = PTR_ADD_OFFSET(g_bbm->remap_table, start * g_bbm->remap_offset);
             if (!remap_node->used) {
@@ -311,9 +331,14 @@ uint32_t bad_block_run_replace(uint16_t log_block, uint8_t *error_plane) {
         index = remap_block[i] * geo->interleave + i;
         map_index = BAD_MAP_INDEX(index);
         map_offset = BAD_MAP_OFFSET(index);
-        ASSERT(!(bad_map[map_index] & ((BAD_BLOCK_BIT | REMAP_BLOCK_BIT) << map_offset)));
+        ASSERT(BAD_MAP_GET(bad_map[map_index], map_offset) == 0);
         bad_map[map_index] |= (REMAP_BLOCK_BIT << map_offset);
     }
     g_bbm->remap_phy_block[vir] = BBM_REMAP_MASK | table_index;
     return TRUE;
+}
+
+
+uint16_t bad_block_get_max(void) {
+    return g_bbm->remap_phy_index;
 }
